@@ -2,40 +2,72 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 
-#define SLEEP_TIME_MS 500
+/* Períodos de inversão de cada LED.
+ * Parte 1: LED0 = 1000 ms, LED1 = 500 ms
+ * Desafio: LED0 = 1000 ms, LED1 = 350 ms */
+#define LED0_PERIOD_MS 1000
+#define LED1_PERIOD_MS 350     /* use 500 para a parte 1 */
 
-// Define o LED usando Device Tree
 #define LED0_NODE DT_ALIAS(led0)
+#define LED1_NODE DT_ALIAS(led1)
 
-// Verifica se o LED está definido no Device Tree
-#if DT_NODE_HAS_STATUS(LED0_NODE, okay)
-static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
-#else
+#if !DT_NODE_HAS_STATUS(LED0_NODE, okay)
 #error "Unsupported board: led0 devicetree alias is not defined"
 #endif
+#if !DT_NODE_HAS_STATUS(LED1_NODE, okay)
+#error "Unsupported board: led1 devicetree alias is not defined"
+#endif
 
-void main(void)
+static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
+static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
+
+/* Callbacks dos timers (executam em contexto de interrupção do kernel:
+ * mantê-los curtos, sem printk nem k_msleep) */
+static void led0_timer_handler(struct k_timer *timer)
+{
+    gpio_pin_toggle_dt(&led0);
+}
+
+static void led1_timer_handler(struct k_timer *timer)
+{
+    gpio_pin_toggle_dt(&led1);
+}
+
+K_TIMER_DEFINE(led0_timer, led0_timer_handler, NULL);
+K_TIMER_DEFINE(led1_timer, led1_timer_handler, NULL);
+
+static int led_init(const struct gpio_dt_spec *led, const char *name)
 {
     int ret;
 
-    // Verifica se o device está pronto
-    if (!gpio_is_ready_dt(&led)) {
-        printk("Error: LED device %s is not ready\n", led.port->name);
-        return;
+    if (!gpio_is_ready_dt(led)) {
+        printk("Error: %s device %s is not ready\n", name, led->port->name);
+        return -ENODEV;
     }
 
-    // Configura o pino como saída
-    ret = gpio_pin_configure_dt(&led, GPIO_OUTPUT_ACTIVE);
+    ret = gpio_pin_configure_dt(led, GPIO_OUTPUT_ACTIVE);
     if (ret < 0) {
-        printk("Error %d: failed to configure LED pin\n", ret);
-        return;
+        printk("Error %d: failed to configure %s pin\n", ret, name);
+        return ret;
     }
 
-    printk("LED blinking on %s pin %d\n", led.port->name, led.pin);
+    printk("%s ready on %s pin %d\n", name, led->port->name, led->pin);
+    return 0;
+}
 
-    while (1) {
-        // Toggle do LED usando a nova API
-        gpio_pin_toggle_dt(&led);
-        k_msleep(SLEEP_TIME_MS);
+int main(void)
+{
+    if (led_init(&led0, "LED0") < 0 || led_init(&led1, "LED1") < 0) {
+        return 0;
     }
+
+    /* Ambos iniciam acesos em t = 0; depois invertem periodicamente */
+    k_timer_start(&led0_timer, K_MSEC(LED0_PERIOD_MS), K_MSEC(LED0_PERIOD_MS));
+    k_timer_start(&led1_timer, K_MSEC(LED1_PERIOD_MS), K_MSEC(LED1_PERIOD_MS));
+
+    printk("LED0 toggle: %d ms | LED1 toggle: %d ms\n",
+           LED0_PERIOD_MS, LED1_PERIOD_MS);
+
+    k_sleep(K_FOREVER);   /* o trabalho é feito pelos timers */
+    return 0;
 }

@@ -1,40 +1,66 @@
+//IMPORTANTE: O código está correto, mas está usando threads ao invés de baremetal. Substitui pelo meu exemplo, mude depois.
+
 #include <zephyr/kernel.h>
+#include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 
-#define LED0_PERIOD_MS 1000
-#define LED1_PERIOD_MS 350      /* led 1 precisa piscar a cada 350ms */
-#define FLASH_MS       100      /* tempo em cada piscada deve ser 1s */
+#define PERIOD_LED0_MS 1000
+#define PERIOD_LED1_MS 500   
 
-static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
-static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
+#define LED0_NODE DT_ALIAS(led0)
+#define LED1_NODE DT_ALIAS(led1)
 
-static void blink(void *p_led, void *p_period, void *unused)
-{
-    const struct gpio_dt_spec *led = p_led;
-    int period = (int)(intptr_t)p_period;
+#if !DT_NODE_HAS_STATUS(LED0_NODE, okay)
+#error "Unsupported board: led0 devicetree alias is not defined"
+#endif
+#if !DT_NODE_HAS_STATUS(LED1_NODE, okay)
+#error "Unsupported board: led1 devicetree alias is not defined"
+#endif
 
-    if (!gpio_is_ready_dt(led) ||
-        gpio_pin_configure_dt(led, GPIO_OUTPUT_INACTIVE) < 0) {
-        return;
-    }
-
-    int64_t next = k_uptime_get();
-
-    while (1) {
-        gpio_pin_set_dt(led, 1);
-        k_msleep(FLASH_MS);
-        gpio_pin_set_dt(led, 0);
-
-        next += period;                       /* sem acumular atraso, porque na 1 mudança estava misturando as cores */
-        k_sleep(K_TIMEOUT_ABS_MS(next));
-    }
-}
-
-K_THREAD_DEFINE(led0_tid, 512, blink, &led0, (void *)LED0_PERIOD_MS, NULL, 7, 0, 0);
-K_THREAD_DEFINE(led1_tid, 512, blink, &led1, (void *)LED1_PERIOD_MS, NULL, 7, 0, 0);
+static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
+static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
 
 int main(void)
 {
-    return 0;   //threads
-    
+    int ret;
+
+    if (!gpio_is_ready_dt(&led0) || !gpio_is_ready_dt(&led1)) {
+        printk("Error: LED device not ready\n");
+        return 0;
+    }
+
+    ret = gpio_pin_configure_dt(&led0, GPIO_OUTPUT_ACTIVE);
+    if (ret < 0) {
+        printk("Error %d: failed to configure LED0\n", ret);
+        return 0;
+    }
+
+    ret = gpio_pin_configure_dt(&led1, GPIO_OUTPUT_ACTIVE);
+    if (ret < 0) {
+        printk("Error %d: failed to configure LED1\n", ret);
+        return 0;
+    }
+
+    printk("LED0 pin %d (%d ms), LED1 pin %d (%d ms)\n",
+           led0.pin, PERIOD_LED0_MS, led1.pin, PERIOD_LED1_MS);
+
+    int64_t next0 = k_uptime_get() + PERIOD_LED0_MS;
+    int64_t next1 = k_uptime_get() + PERIOD_LED1_MS;
+
+    while (1) {
+        int64_t now = k_uptime_get();
+
+        if (now >= next0) {
+            gpio_pin_toggle_dt(&led0);
+            next0 += PERIOD_LED0_MS;
+        }
+        if (now >= next1) {
+            gpio_pin_toggle_dt(&led1);
+            next1 += PERIOD_LED1_MS;
+        }
+
+        k_msleep(5);
+    }
+
+    return 0;
 }
